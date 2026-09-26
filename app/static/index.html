@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ID Scanner Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 20px; }
+  .drop {
+    border: 2px dashed #aaa; border-radius: 8px; padding: 24px; text-align: center;
+    cursor: pointer; color: #666;
+  }
+  .drop.hover { border-color: #4a90d9; background: #f0f6fc; }
+  input[type=file] { display: none; }
+  .row { display: flex; gap: 24px; margin-top: 24px; flex-wrap: wrap; }
+  .col { flex: 1 1 320px; }
+  img { max-width: 100%; border: 1px solid #ddd; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+  td.key { font-weight: 600; width: 140px; color: #444; }
+  pre { background: #f7f7f7; padding: 10px; border-radius: 6px; white-space: pre-wrap; font-size: 12px; }
+  button { margin-top: 16px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  #status { color: #888; margin-top: 8px; font-size: 13px; }
+  #error { color: #c0392b; margin-top: 8px; font-size: 13px; }
+  #quality { margin-top: 8px; font-size: 13px; padding: 8px 10px; border-radius: 6px; display: none; }
+  #quality.warn { display: block; background: #fff3cd; color: #7a5b00; }
+  #quality.good { display: block; background: #e6f4ea; color: #1e6b34; }
+</style>
+</head>
+<body>
+  <h1>ID Scanner Service — Test Page</h1>
+
+  <label class="drop" id="drop" for="file">
+    Click to choose an ID card photo, or drag one here
+  </label>
+  <input type="file" id="file" accept="image/jpeg,image/png,image/webp">
+
+  <button id="scanBtn" disabled>Scan</button>
+  <div id="status"></div>
+  <div id="quality"></div>
+  <div id="error"></div>
+
+  <div class="row" id="results" style="display:none">
+    <div class="col">
+      <h3>Original</h3>
+      <img id="original">
+      <h3>Processed (what OCR saw)</h3>
+      <img id="processed">
+    </div>
+    <div class="col">
+      <h3>Extracted Fields</h3>
+      <table id="fieldsTable"></table>
+      <h3>Raw OCR Text</h3>
+      <pre id="rawText"></pre>
+    </div>
+  </div>
+
+<script>
+  const fileInput = document.getElementById('file');
+  const drop = document.getElementById('drop');
+  const scanBtn = document.getElementById('scanBtn');
+  const statusEl = document.getElementById('status');
+  const errorEl = document.getElementById('error');
+  const results = document.getElementById('results');
+  const originalImg = document.getElementById('original');
+  const processedImg = document.getElementById('processed');
+  const fieldsTable = document.getElementById('fieldsTable');
+  const rawText = document.getElementById('rawText');
+  const qualityEl = document.getElementById('quality');
+
+  const ISSUE_LABELS = {
+    low_resolution: 'Image resolution is too low — move closer or use a higher-res camera',
+    blurry: 'Image looks blurry — hold steady and refocus',
+    glare: 'Glare detected on the card surface — tilt to avoid reflections',
+  };
+
+  let selectedFile = null;
+
+  function setFile(f) {
+    if (!f) return;
+    selectedFile = f;
+    scanBtn.disabled = false;
+    drop.textContent = f.name;
+    originalImg.src = URL.createObjectURL(f);
+    results.style.display = 'flex';
+    processedImg.src = '';
+    fieldsTable.innerHTML = '';
+    rawText.textContent = '';
+    errorEl.textContent = '';
+    qualityEl.className = '';
+    qualityEl.textContent = '';
+  }
+
+  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('hover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('hover'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault();
+    drop.classList.remove('hover');
+    if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+  });
+
+  scanBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    errorEl.textContent = '';
+    statusEl.textContent = 'Scanning…';
+    scanBtn.disabled = true;
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+      const res = await fetch('/scan', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Scan failed');
+      }
+      const data = await res.json();
+
+      statusEl.textContent = `Done in ${data.processing_time_ms} ms`;
+      if (data.preview_image) processedImg.src = data.preview_image;
+
+      if (data.quality) {
+        if (data.quality.ok) {
+          qualityEl.className = 'good';
+          qualityEl.textContent = 'Image quality looks good.';
+        } else {
+          qualityEl.className = 'warn';
+          const messages = data.quality.issues.map(i => ISSUE_LABELS[i] || i);
+          qualityEl.textContent = 'Quality warning: ' + messages.join(' · ');
+        }
+      }
+
+      fieldsTable.innerHTML = '';
+      for (const [key, value] of Object.entries(data.fields)) {
+        if (key === 'raw_text') continue;
+        const tr = document.createElement('tr');
+        const displayValue = Array.isArray(value) ? value.join(', ') : (value ?? '—');
+        tr.innerHTML = `<td class="key">${key}</td><td>${displayValue}</td>`;
+        fieldsTable.appendChild(tr);
+      }
+      rawText.textContent = data.fields.raw_text || '';
+    } catch (e) {
+      errorEl.textContent = e.message;
+      statusEl.textContent = '';
+    } finally {
+      scanBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
